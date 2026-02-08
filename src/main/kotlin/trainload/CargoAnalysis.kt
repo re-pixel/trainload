@@ -1,13 +1,14 @@
 package trainload
 
 import java.util.BitSet
-import java.util.LinkedList
 
 class CargoAnalysis(private val graph: RailwayGraph) {
 
     private val cargoToIndex: Map<Int, Int>
     private val indexToCargo: Map<Int, Int>
     private val nUniqueCargos: Int
+    private val rpoStations: List<Int>
+    private val stationToRpoIndex: Map<Int, Int>
 
     init {
         val sorted = graph.stations.values
@@ -17,9 +18,25 @@ class CargoAnalysis(private val graph: RailwayGraph) {
         cargoToIndex = sorted.withIndex().associate { (i, c) -> c to i }
         indexToCargo = cargoToIndex.entries.associate { (k, v) -> v to k }
         nUniqueCargos = sorted.size
+        rpoStations = computeRPO()
+        stationToRpoIndex = rpoStations.withIndex().associate { it.value to it.index }
     }
 
-    // OUT(s) = (IN(s) \ {unload(s)}) ∪ {load(s)}
+    private fun computeRPO(): List<Int> {
+        val visited = mutableSetOf<Int>()
+        val postOrder = mutableListOf<Int>()
+
+        
+        fun dfs(u: Int) {
+            visited.add(u)
+            graph.successors[u]?.forEach { v -> if (v !in visited) dfs(v) }
+            postOrder.add(u)
+        }
+        
+        dfs(graph.startStation)
+        return postOrder.reversed()
+    }
+
     private fun transfer(station: Station, inSet: BitSet): BitSet {
         val out = inSet.clone() as BitSet
         cargoToIndex[station.unload]?.let { out.clear(it) }
@@ -31,41 +48,32 @@ class CargoAnalysis(private val graph: RailwayGraph) {
         val inSets  = graph.stations.keys.associateWith { BitSet(nUniqueCargos) }.toMutableMap()
         val outSets = graph.stations.keys.associateWith { BitSet(nUniqueCargos) }.toMutableMap()
 
-        val s0 = graph.startStation
-        outSets[s0] = transfer(graph.stations[s0]!!, inSets[s0]!!)
+        val worklist = BitSet(rpoStations.size)
+        val s0Index = stationToRpoIndex[graph.startStation]!!
 
-        val worklist = LinkedList<Int>()
-        val inWorklist = mutableSetOf<Int>()
-        for (successor in graph.successors[s0].orEmpty()) {
-            if (inWorklist.add(successor)) worklist.add(successor)
-        }
+        worklist.set(s0Index)
 
-
-        while (worklist.isNotEmpty()) {
-            val sid = worklist.poll()
-            inWorklist.remove(sid)
-
+        while (!worklist.isEmpty()) {
+            val rpoIndex = worklist.nextSetBit(0)
+            worklist.clear(rpoIndex)
+            
+            val sid = rpoStations[rpoIndex]
 
             val newIn = BitSet(nUniqueCargos)
-            for (predecessor in graph.predecessors[sid].orEmpty()) {
-                newIn.or(outSets[predecessor]!!)
-            }
+            graph.predecessors[sid]?.forEach { pred -> outSets[pred]?.let {newIn.or(it)}}
+            inSets[sid]!!.or(newIn)
 
-            inSets[sid] = newIn
+            val newOut = transfer(graph.stations[sid]!!, inSets[sid]!!)
 
-            val newOut = transfer(graph.stations[sid]!!, newIn)
-
-            if (newOut != outSets[sid]) {
+            if (newOut != outSets[sid]){
                 outSets[sid] = newOut
-                for (successor in graph.successors[sid].orEmpty()) {
-                    if (inWorklist.add(successor)) worklist.add(successor)
-                }
+                graph.successors[sid]?.forEach {
+                    successor -> stationToRpoIndex[successor]?.let {worklist.set(it)}
+                } 
             }
         }
 
-        return graph.stations.keys.associateWith { sid ->
-            bitSetToCargoSet(inSets[sid]!!)
-        }
+        return graph.stations.keys.associateWith { sid -> bitSetToCargoSet(inSets[sid]!!) }
     }
 
     private fun bitSetToCargoSet(bits: BitSet): Set<Int> = buildSet {
